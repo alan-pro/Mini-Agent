@@ -25,6 +25,9 @@ venv/
 ENV/
 env/
 .venv
+node_modules/
+package-lock.json
+package.json
 
 # IDE
 .vscode/
