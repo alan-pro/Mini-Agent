@@ -476,11 +476,16 @@ async def _quiet_cleanup():
     # handler here would still let the noise through.  Since this runs
     # right before process exit, swallowing late exceptions is safe.
     loop = asyncio.get_event_loop()
+    original_handler = loop.get_exception_handler()
     loop.set_exception_handler(lambda _loop, _ctx: None)
     try:
         await cleanup_mcp_connections()
     except Exception:
         pass
+    finally:
+        # Restore the original exception handler if it existed
+        if original_handler:
+            loop.set_exception_handler(original_handler)
 
 
 async def run_agent(workspace_dir: Path, task: str = None):

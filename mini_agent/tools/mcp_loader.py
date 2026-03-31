@@ -2,6 +2,7 @@
 
 import asyncio
 import json
+import logging
 from contextlib import AsyncExitStack
 from dataclasses import dataclass
 from pathlib import Path
@@ -270,13 +271,28 @@ class MCPServerConnection:
         """Properly disconnect from the MCP server."""
         if self.exit_stack:
             try:
+                # Mark as disconnecting to prevent recursive calls
+                if hasattr(self, '_disconnecting') and self._disconnecting:
+                    return
+                self._disconnecting = True
+
+                # First try to close the session if it exists
+                if self.session:
+                    await self.session.close()
+                    self.session = None
+
+                # Then close the exit stack
                 await self.exit_stack.aclose()
-            except Exception:
-                # anyio cancel scope may raise RuntimeError or ExceptionGroup
-                # when stdio_client's task group is closed from a different
-                # task context during shutdown.
+            except (asyncio.CancelledError, RuntimeError) as e:
+                # These are expected during shutdown
+                logging.debug(f"MCP disconnect cancelled: {e}")
+                pass
+            except Exception as e:
+                logging.warning(f"Error during MCP disconnect: {e}")
+                # Don't raise exceptions during cleanup
                 pass
             finally:
+                self._disconnecting = False
                 self.exit_stack = None
                 self.session = None
 
@@ -425,9 +441,26 @@ async def load_mcp_tools_async(config_path: str = "mcp.json") -> list[Tool]:
         return []
 
 
+logger = logging.getLogger(__name__)
+
 async def cleanup_mcp_connections():
     """Clean up all MCP connections."""
     global _mcp_connections
-    for connection in _mcp_connections:
-        await connection.disconnect()
+    # Make a copy to avoid modification during iteration
+    connections_copy = _mcp_connections.copy()
     _mcp_connections.clear()
+
+    for connection in connections_copy:
+        try:
+            # Check if connection is already disconnecting
+            if hasattr(connection, '_disconnecting') and connection._disconnecting:
+                continue
+
+            await connection.disconnect()
+        except (asyncio.CancelledError, RuntimeError, Exception) as e:
+            logging.warning(f"Error cleaning up MCP connection: {e}")
+            # Continue with other connections even if one fails
+            # Note: Don't log cancelled errors as they're expected during shutdown
+            if not isinstance(e, asyncio.CancelledError):
+                logging.debug(f"Disconnect error details", exc_info=True)
+            pass
